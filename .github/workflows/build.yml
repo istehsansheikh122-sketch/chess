@@ -16,7 +16,7 @@ jobs:
         with:
           channel: stable
       - run: flutter create --platforms=android --project-name chess_agent --org com.istehsaan .
-      - name: Inject permissions + OverlayService
+      - name: Inject permissions + OverlayService + lint fix
         run: |
           MANIFEST="android/app/src/main/AndroidManifest.xml"
           sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>\n    <application|' "$MANIFEST"
@@ -39,15 +39,53 @@ jobs:
               p.write_text(text)
           print("Manifest updated OK")
           '
+          # Disable release lint (fixes image_picker lintVital crash on CI)
+          echo "" >> android/gradle.properties
+          echo "android.lint.checkReleaseBuilds=false" >> android/gradle.properties
+          echo "android.defaults.buildfeatures.buildconfig=true" >> android/gradle.properties
+          # Also patch app build.gradle / .kts
+          python3 -c '
+          from pathlib import Path
+          for name in ["android/app/build.gradle", "android/app/build.gradle.kts"]:
+              p = Path(name)
+              if not p.exists():
+                  continue
+              t = p.read_text()
+              if "checkReleaseBuilds" in t:
+                  print(name, "already has lint config")
+                  continue
+              if name.endswith(".kts"):
+                  block = """
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
+    }
+"""
+              else:
+                  block = """
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+"""
+              # insert after first "android {"
+              idx = t.find("android {")
+              if idx >= 0:
+                  # find end of that line
+                  end = t.find("\n", idx)
+                  t = t[:end+1] + block + t[end+1:]
+                  p.write_text(t)
+                  print("lint block added to", name)
+              else:
+                  print("android { not found in", name)
+          '
+          echo "lint fix applied"
+          cat android/gradle.properties || true
       - run: flutter pub get
       - name: Fix stockfish jcenter() (Gradle 8+ removed it)
         run: |
-          find "$HOME/.pub-cache" -path "*stockfish*" -name "build.gradle" 2>/dev/null | while read f; do
-            echo "Patching: $f"
-            sed -i 's/jcenter()/mavenCentral()/g' "$f"
-          done
-          # Also patch any settings/repositories that might still reference jcenter
           find "$HOME/.pub-cache" -path "*stockfish*" -name "*.gradle" 2>/dev/null | while read f; do
+            echo "Patching: $f"
             sed -i 's/jcenter()/mavenCentral()/g' "$f" || true
           done
           echo "stockfish gradle patch done"
