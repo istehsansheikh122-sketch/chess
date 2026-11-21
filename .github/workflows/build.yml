@@ -9,31 +9,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
-        with: { distribution: temurin, java-version: '17' }
+        with:
+          distribution: temurin
+          java-version: "17"
       - uses: subosito/flutter-action@v2
-        with: { channel: stable }
+        with:
+          channel: stable
       - run: flutter create --platforms=android --project-name chess_agent --org com.istehsaan .
       - name: Inject permissions + OverlayService
         run: |
-          MANIFEST=android/app/src/main/AndroidManifest.xml
-          # INTERNET + SYSTEM_ALERT_WINDOW + FOREGROUND_SERVICE permissions
-          sed -i 's#<application#\
-    <uses-permission android:name="android.permission.INTERNET"/>\
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>\
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>\
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>\
-    <application#' "$MANIFEST"
-          # OverlayService before </application>
-          sed -i 's#</application>#\
-        <service\
-            android:name="flutter.overlay.window.flutter_overlay_window.OverlayService"\
-            android:exported="false"\
-            android:foregroundServiceType="specialUse">\
-          <property\
-              android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"\
-              android:value="Floating chess analysis button over other apps"/>\
-        </service>\
-    </application>#' "$MANIFEST"
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>\n    <application|' "$MANIFEST"
+          python3 -c '
+          from pathlib import Path
+          p = Path("android/app/src/main/AndroidManifest.xml")
+          text = p.read_text()
+          service = """
+                  <service
+                      android:name="flutter.overlay.window.flutter_overlay_window.OverlayService"
+                      android:exported="false"
+                      android:foregroundServiceType="specialUse">
+                      <property
+                          android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                          android:value="Floating chess analysis button over other apps"/>
+                  </service>
+          """
+          if "OverlayService" not in text:
+              text = text.replace("</application>", service + "\n    </application>")
+              p.write_text(text)
+          print("Manifest updated OK")
+          '
       - run: flutter pub get
       - run: flutter build apk --release
       - uses: actions/upload-artifact@v4
