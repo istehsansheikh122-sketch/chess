@@ -40,6 +40,17 @@ jobs:
           print("Manifest updated OK")
           '
       - run: flutter pub get
+      - name: Fix stockfish jcenter() (Gradle 8+ removed it)
+        run: |
+          find "$HOME/.pub-cache" -path "*stockfish*" -name "build.gradle" 2>/dev/null | while read f; do
+            echo "Patching: $f"
+            sed -i 's/jcenter()/mavenCentral()/g' "$f"
+          done
+          # Also patch any settings/repositories that might still reference jcenter
+          find "$HOME/.pub-cache" -path "*stockfish*" -name "*.gradle" 2>/dev/null | while read f; do
+            sed -i 's/jcenter()/mavenCentral()/g' "$f" || true
+          done
+          echo "stockfish gradle patch done"
       - run: flutter build apk --release
       - uses: actions/upload-artifact@v4
         with:
