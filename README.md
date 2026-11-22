@@ -9,11 +9,13 @@ Screenshot → board recognition (on-device) → Stockfish top 3 → OpenRouter 
 **A) Apne PC par (Flutter installed ho):**
 ```bash
 flutter create --platforms=android --project-name chess_agent --org com.istehsaan .
-# Ab neeche wale permissions manually AndroidManifest mein add karo (ya CI wala sed use karo)
 flutter pub get
-flutter build apk --release
+python3 tools/patch_android.py
+flutter build apk --release --target-platform android-arm64
 ```
 APK: `build/app/outputs/flutter-apk/app-release.apk`
+
+> **Size:** `--split-per-abi` mat use karo (patch script ke abiFilters se conflict karta hai). Bina patch ke fat APK (sab ABIs) ~300MB ban jaati hai.
 
 **B) Bina Flutter install kiye:** is folder ko GitHub repo mein push karo, Actions tab → "Build APK" → Run workflow, phir artifact se APK download karo.
 
@@ -41,7 +43,8 @@ APK: `build/app/outputs/flutter-apk/app-release.apk`
 </service>
 ```
 
-CI workflow yeh permissions automatically inject karta hai.
+CI workflow `tools/patch_android.py` se yeh permissions + service automatically inject karta hai.
+Local build ke liye `flutter create ...` ke baad `python3 tools/patch_android.py` chala do.
 
 ## Use (normal)
 
@@ -68,3 +71,9 @@ CI workflow yeh permissions automatically inject karta hai.
 
 - Sirf practice, analysis aur computer ke against khelne ke liye. Insaanon ke live games mein engine move lena Lichess par cheating hai.
 - En passant image se nahi pata chalta; castling rights king/rook ki jagah se guess hoti hain.
+
+## Floating button nahi dikhe to
+
+- Settings → Apps → Chess Agent → **Display over other apps** ON.
+- Xiaomi/Oppo/Vivo/Realme: **Display pop-up windows while running in background** bhi ON karo, aur battery saver/autostart allow karo.
+- `overlayMain()` main.dart mein hai (plugin ki shart) — isko wahan se mat hatana.

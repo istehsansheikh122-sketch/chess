@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
@@ -12,6 +13,16 @@ import 'overlay.dart';
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const App());
+}
+
+/// Overlay (floating button) ka entry point — plugin ke liye main.dart mein hona zaruri hai.
+@pragma("vm:entry-point")
+void overlayMain() {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const MaterialApp(
+    debugShowCheckedModeBanner: false,
+    home: OverlayBubble(),
+  ));
 }
 
 class App extends StatelessWidget {
@@ -59,6 +70,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
   List<String> seen = List.filled(64, '.');
   bool whiteBottom = true, whiteToMove = true, busy = false, hasBoard = false;
   bool floatingOn = false;
+  StreamSubscription? _overlaySub;
   List<Line> lines = [];
   String? note, why, fen;
   String key = '', model = 'anthropic/claude-3.5-haiku';
@@ -77,7 +89,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
     });
 
     // Overlay se aane wala signal suno
-    FlutterOverlayWindow.overlayListener.listen((data) {
+    _overlaySub = FlutterOverlayWindow.overlayListener.listen((data) {
       if (data == "analyze") {
         // App foreground mein aa chuki hai / aayegi — screenshot flow start karo
         _fromFloating();
@@ -87,6 +99,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _overlaySub?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -219,8 +232,8 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
 
     // Floating bubble start
     await FlutterOverlayWindow.showOverlay(
-      height: 80,
-      width: 80,
+      height: 100,
+      width: 100,
       alignment: OverlayAlignment.centerRight,
       enableDrag: true,
       overlayTitle: "Chess Agent",

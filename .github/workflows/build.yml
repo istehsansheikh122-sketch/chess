@@ -15,53 +15,22 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-      - run: flutter create --platforms=android --project-name chess_agent --org com.istehsaan .
-      - name: Inject permissions + OverlayService
-        run: |
-          MANIFEST="android/app/src/main/AndroidManifest.xml"
-          sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>\n    <application|' "$MANIFEST"
-          python3 -c '
-          from pathlib import Path
-          p = Path("android/app/src/main/AndroidManifest.xml")
-          text = p.read_text()
-          service = """
-                  <service
-                      android:name="flutter.overlay.window.flutter_overlay_window.OverlayService"
-                      android:exported="false"
-                      android:foregroundServiceType="specialUse">
-                      <property
-                          android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                          android:value="Floating chess analysis button over other apps"/>
-                  </service>
-          """
-          if "OverlayService" not in text:
-              text = text.replace("</application>", service + "\n    </application>")
-              p.write_text(text)
-          print("Manifest updated OK")
-          '
+      - name: Create Android platform files
+        run: flutter create --platforms=android --project-name chess_agent --org com.istehsaan .
+      - name: Patch manifest and gradle (permissions, arm64-only, compressed libs)
+        run: python3 tools/patch_android.py
       - run: flutter pub get
-      - name: Fix stockfish jcenter() (Gradle 8+ removed it)
+      - name: Fix stockfish jcenter()
         run: |
           find "$HOME/.pub-cache" -path "*stockfish*" -name "*.gradle" 2>/dev/null | while read f; do
-            echo "Patching: $f"
             sed -i 's/jcenter()/mavenCentral()/g' "$f" || true
           done
-          echo "stockfish gradle patch done"
-      - name: Disable lintVital tasks globally (init script)
+      - name: Build arm64 release APK (single, small)
+        run: flutter build apk --release --target-platform android-arm64
+      - name: Show APK size and biggest files
         run: |
-          mkdir -p "$HOME/.gradle/init.d"
-          cat > "$HOME/.gradle/init.d/disable-lint.gradle" <<'EOF'
-          allprojects {
-              tasks.configureEach { t ->
-                  if (t.name.startsWith("lintVital")) {
-                      t.enabled = false
-                  }
-              }
-          }
-          EOF
-          echo "init script written:"
-          cat "$HOME/.gradle/init.d/disable-lint.gradle"
-      - run: flutter build apk --release
+          ls -lh build/app/outputs/flutter-apk/*.apk
+          unzip -lv build/app/outputs/flutter-apk/app-release.apk | sort -k1 -n -r | head -15
       - uses: actions/upload-artifact@v4
         with:
           name: chess-agent-apk
