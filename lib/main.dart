@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
+import 'package:photo_manager/photo_manager.dart' as pm;
 import 'engine.dart';
 import 'llm.dart';
 import 'recognizer.dart';
@@ -19,9 +21,10 @@ void main() {
 @pragma("vm:entry-point")
 void overlayMain() {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const MaterialApp(
+  runApp(MaterialApp(
     debugShowCheckedModeBanner: false,
-    home: OverlayBubble(),
+    theme: ThemeData.dark(useMaterial3: true),
+    home: const OverlayRoot(),
   ));
 }
 
@@ -68,7 +71,8 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
   Templates? tpl;
   Uint8List? bytes;
   List<String> seen = List.filled(64, '.');
-  bool whiteBottom = true, whiteToMove = true, busy = false, hasBoard = false;
+  bool whiteBottom = true, busy = false, hasBoard = false;
+  bool? whiteToMove; // null = user ne abhi baari nahi batayi
   bool floatingOn = false;
   StreamSubscription? _overlaySub;
   List<Line> lines = [];
@@ -89,11 +93,9 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
     });
 
     // Overlay se aane wala signal suno
-    _overlaySub = FlutterOverlayWindow.overlayListener.listen((data) {
-      if (data == "analyze") {
-        // App foreground mein aa chuki hai / aayegi — screenshot flow start karo
-        _fromFloating();
-      }
+    _overlaySub = FlutterOverlayWindow.overlayListener.listen(_onOverlayMsg);
+    FlutterOverlayWindow.isActive().then((a) {
+      if (mounted) setState(() => floatingOn = a);
     });
   }
 
@@ -109,15 +111,115 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
     // App foreground aayi to floating se aaya signal process ho sakta hai
   }
 
-  Future<void> _fromFloating() async {
-    // Floating button se aaya → ab latest screenshot choose karne do
-    // (user ne pehle system screenshot le liya hota hai Power+Vol se)
-    if (tpl == null) {
-      setState(() => note = 'Pehle Calibrate karo (starting position ka screenshot).');
+  // ---------------- Floating popup se aane wale kaam ----------------
+  bool _overlayBusy = false;
+
+  void _tell(String type, [Map<String, dynamic> extra = const {}]) {
+    FlutterOverlayWindow.shareData(jsonEncode({'t': type, ...extra}));
+  }
+
+  void _status(String msg) => _tell('status', {'msg': msg});
+
+  Future<void> _onOverlayMsg(dynamic raw) async {
+    Map<String, dynamic> m;
+    try {
+      m = raw is String
+          ? Map<String, dynamic>.from(jsonDecode(raw) as Map)
+          : Map<String, dynamic>.from(raw as Map);
+    } catch (_) {
       return;
     }
-    // Image picker open karo — recent screenshots se latest choose karna aasaan hai
-    await pick();
+    if (m['t'] == 'analyze') {
+      await _runFromOverlay(m['white'] == true, m['flip'] == true);
+    } else if (m['t'] == 'closed') {
+      if (mounted) setState(() => floatingOn = false);
+    }
+  }
+
+  /// Gallery ka sabse naya screenshot (bina UI ke).
+  Future<Uint8List> _latestScreenshot() async {
+    final ps = await pm.PhotoManager.requestPermissionExtend();
+    if (!ps.hasAccess) {
+      throw 'Photos ki permission nahi hai. Chess Agent app kholo, Floating On karo aur "Allow all" do.';
+    }
+    final paths = await pm.PhotoManager.getAssetPathList(
+      type: pm.RequestType.image,
+      onlyAll: true,
+      filterOption: pm.FilterOptionGroup()
+        ..addOrderOption(pm.OrderOption(type: pm.OrderOptionType.createDate, asc: false)),
+    );
+    if (paths.isEmpty) throw 'Gallery mein koi screenshot nahi mila.';
+    final list = await paths.first.getAssetListRange(start: 0, end: 1);
+    if (list.isEmpty) throw 'Gallery mein koi screenshot nahi mila.';
+    final a = list.first;
+    final age = DateTime.now().difference(a.createDateTime);
+    if (age.inMinutes >= 3) {
+      throw 'Sabse naya screenshot ${age.inMinutes} minute purana hai. '
+          'Pehle naya screenshot lo (Power+Vol), phir dobara dabao. '
+          'Agar abhi liya tha to Photos ki "Allow all" permission check karo.';
+    }
+    final bytes = await a.originBytes;
+    if (bytes == null) throw 'Screenshot khul nahi saka.';
+    return bytes;
+  }
+
+  Future<void> _runFromOverlay(bool white, bool flip) async {
+    if (_overlayBusy) return;
+    _overlayBusy = true;
+    try {
+      _status('Screenshot dhoondh raha hoon...');
+      if (tpl == null) {
+        _tell('error', {'msg': 'Pehle Chess Agent app mein Calibrate karo (starting position ka screenshot).'});
+        return;
+      }
+      final shot = await _latestScreenshot();
+
+      _status('Board padh raha hoon...');
+      await Future.delayed(const Duration(milliseconds: 80));
+      final s = tpl!.scan(shot);
+      var wb = _detectWhiteBottom(s) ?? true;
+      if (flip) wb = !wb;
+      final f = toFen(s, wb, white);
+      if (mounted) {
+        setState(() {
+          seen = s;
+          hasBoard = true;
+          whiteBottom = wb;
+          whiteToMove = white;
+          fen = f;
+          lines = [];
+        });
+      }
+      final err = checkFen(f);
+      if (err != null) {
+        _tell('error', {
+          'msg': '$err\n\nBoard ulta lage to "Board ulta" tick karke dobara try karo. '
+              'Ya Chess Agent app mein board kholkar piece theek karo.'
+        });
+        return;
+      }
+
+      _status('Engine soch raha hai...');
+      final r = await engine.analyse(f);
+      if (r.isEmpty) {
+        _tell('error', {'msg': 'Engine ne koi move nahi di. Dobara try karo.'});
+        return;
+      }
+      if (mounted) setState(() => lines = r);
+      final m = r.first.move;
+      _tell('result', {
+        'white': white,
+        'san': san(f, m),
+        'from': m.substring(0, 2),
+        'to': m.substring(2, 4),
+        'eval': r.first.score,
+        'alts': r.skip(1).map((l) => '${san(f, l.move)}  (${l.score})').toList(),
+      });
+    } catch (e) {
+      _tell('error', {'msg': e is String ? e : 'Masla aaya: $e'});
+    } finally {
+      _overlayBusy = false;
+    }
   }
 
   Future<void> pick() async {
@@ -137,15 +239,36 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
     try {
       seen = tpl!.scan(bytes!);
       hasBoard = true;
+      whiteBottom = _detectWhiteBottom(seen) ?? whiteBottom;
+      whiteToMove = null;
+      lines = [];
+      fen = null;
+      note = 'Board padh liya. Ab neeche batao kiski baari hai.';
     } catch (e) {
       note = 'Image padhne mein masla: $e';
     }
     setState(() => busy = false);
-    if (hasBoard) await analyze();
+  }
+
+  /// King ki jagah se board ka rukh pata karo: white king neeche wale aadhe mein = white neeche.
+  bool? _detectWhiteBottom(List<String> s) {
+    final wk = s.indexOf('K'), bk = s.indexOf('k');
+    if (wk >= 0) return wk ~/ 8 >= 4;
+    if (bk >= 0) return bk ~/ 8 < 4;
+    return null;
+  }
+
+  Future<void> setTurn(bool white) async {
+    setState(() => whiteToMove = white);
+    await analyze();
   }
 
   Future<void> analyze() async {
-    fen = toFen(seen, whiteBottom, whiteToMove);
+    if (whiteToMove == null) {
+      setState(() => note = 'Pehle batao kiski baari hai (White ya Black).');
+      return;
+    }
+    fen = toFen(seen, whiteBottom, whiteToMove!);
     final err = checkFen(fen!);
     if (err != null) {
       setState(() {
@@ -214,7 +337,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
   }
 
   Future<void> toggleFloating() async {
-    if (floatingOn) {
+    if (await FlutterOverlayWindow.isActive()) {
       await FlutterOverlayWindow.closeOverlay();
       setState(() => floatingOn = false);
       return;
@@ -230,11 +353,21 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
       }
     }
 
+    // Popup screenshot gallery se khud uthata hai — uski permission abhi le lo
+    final ps = await pm.PhotoManager.requestPermissionExtend();
+    if (!ps.hasAccess) {
+      setState(() => note = 'Photos ki permission do (Allow all), warna floating popup screenshot nahi padh payega.');
+      return;
+    }
+    final limited = ps == pm.PermissionState.limited;
+
     // Floating bubble start
+    final dpr = MediaQuery.of(context).devicePixelRatio;
+    final px = (96 * dpr).round();
     await FlutterOverlayWindow.showOverlay(
-      height: 100,
-      width: 100,
-      alignment: OverlayAlignment.centerRight,
+      height: px,
+      width: px,
+      alignment: OverlayAlignment.topRight,
       enableDrag: true,
       overlayTitle: "Chess Agent",
       overlayContent: "Best move ke liye tap karo",
@@ -243,7 +376,9 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
     );
     setState(() {
       floatingOn = true;
-      note = 'Floating button on. Lichess kholo, system screenshot lo (Power+Vol), phir floating ♟ pe tap karo.';
+      note = limited
+          ? 'Floating on, lekin Photos ki "Allow all" access do, warna naye screenshots nahi dikhenge.'
+          : 'Floating on. Lichess kholo, screenshot lo (Power+Vol), phir ♟ bubble tap karo.';
     });
   }
 
@@ -310,7 +445,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
             child: const Padding(
               padding: EdgeInsets.all(12),
               child: Text(
-                'Floating ♟ on hai. Lichess mein game khelo → Power+Volume se screenshot lo → floating button pe tap karo → latest screenshot choose karo.',
+                'Floating ♟ on hai. Lichess mein game khelo → Power+Volume se screenshot lo → ♟ bubble tap karo → baari chuno → "Best move batao" dabao. Move usi popup mein dikhegi.',
                 style: TextStyle(fontSize: 13),
               ),
             ),
@@ -340,23 +475,74 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
           const SizedBox(height: 12),
           boardView(),
           const Text(
-              'Galat piece ho to square par tap karke badlo, phir Dobara analyse dabao.',
+              'Board mein galat piece ho to square par tap karke badlo, phir baari wala button dobara dabao. Board mein highlighted squares best move dikhate hain.',
               style: TextStyle(fontSize: 12)),
+          const SizedBox(height: 8),
+          const Text('Kiski baari hai? Tap karo:',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 6),
+          Row(children: [
+            Expanded(
+              child: whiteToMove == true
+                  ? FilledButton.icon(
+                      style: FilledButton.styleFrom(
+                          backgroundColor: Colors.white, foregroundColor: Colors.black),
+                      onPressed: busy ? null : () => setTurn(true),
+                      icon: const Icon(Icons.circle_outlined),
+                      label: const Text('White ki baari'))
+                  : OutlinedButton.icon(
+                      onPressed: busy ? null : () => setTurn(true),
+                      icon: const Icon(Icons.circle_outlined),
+                      label: const Text('White ki baari')),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: whiteToMove == false
+                  ? FilledButton.icon(
+                      style: FilledButton.styleFrom(
+                          backgroundColor: Colors.black, foregroundColor: Colors.white),
+                      onPressed: busy ? null : () => setTurn(false),
+                      icon: const Icon(Icons.circle),
+                      label: const Text('Black ki baari'))
+                  : OutlinedButton.icon(
+                      onPressed: busy ? null : () => setTurn(false),
+                      icon: const Icon(Icons.circle),
+                      label: const Text('Black ki baari')),
+            ),
+          ]),
           Wrap(spacing: 8, children: [
-            FilterChip(
-                label: const Text('White neeche'),
-                selected: whiteBottom,
-                onSelected: (v) => setState(() => whiteBottom = v)),
-            FilterChip(
-                label: const Text('White ki baari'),
-                selected: whiteToMove,
-                onSelected: (v) => setState(() => whiteToMove = v)),
-            ActionChip(label: const Text('Dobara analyse'), onPressed: busy ? null : analyze),
+            ActionChip(
+                label: const Text('Board ulta hai? Flip'),
+                onPressed: busy
+                    ? null
+                    : () {
+                        setState(() => whiteBottom = !whiteBottom);
+                        if (whiteToMove != null) analyze();
+                      }),
           ]),
         ],
         if (lines.isNotEmpty) ...[
           const SizedBox(height: 12),
-          const Text('Best moves', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          Card(
+            color: Colors.green.shade800,
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Row(children: [
+                const Text('♟', style: TextStyle(fontSize: 34)),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    const Text('Agli best move', style: TextStyle(fontSize: 13)),
+                    Text(san(fen!, lines.first.move),
+                        style: const TextStyle(fontSize: 30, fontWeight: FontWeight.bold)),
+                    Text('${lines.first.move.substring(0, 2)} → ${lines.first.move.substring(2, 4)}   •   eval ${lines.first.score}',
+                        style: const TextStyle(fontSize: 13)),
+                  ]),
+                ),
+              ]),
+            ),
+          ),
+          const Text('Doosri options', style: TextStyle(fontSize: 14)),
           for (final l in lines)
             ListTile(
               dense: true,
