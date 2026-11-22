@@ -14,12 +14,15 @@ perms = [
     "android.permission.SYSTEM_ALERT_WINDOW",
     "android.permission.FOREGROUND_SERVICE",
     "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
+    "android.permission.READ_MEDIA_IMAGES",
 ]
 add = "".join(
     f'    <uses-permission android:name="{p}"/>\n'
     for p in perms
     if f'android:name="{p}"' not in text
 )
+if "READ_EXTERNAL_STORAGE" not in text:
+    add += '    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>\n'
 if add:
     text = text.replace("<application", add + "    <application", 1)
 
