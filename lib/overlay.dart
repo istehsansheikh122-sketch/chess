@@ -1,8 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:isolate';
+import 'dart:typed_data';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
+import 'package:photo_manager/photo_manager.dart' as pm;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'engine.dart';
+import 'recognizer.dart';
 
 /// Floating popup (overlay). Collapsed = chhota ♟ bubble, tap par bada panel khulta hai:
 /// baari chuno -> "Best move batao" -> loading -> move isi panel mein.
@@ -23,21 +29,13 @@ class _OverlayRootState extends State<OverlayRoot> {
   String status = '';
   String errorMsg = '';
   Map<String, dynamic>? result;
-  StreamSubscription? _sub;
-  Timer? _timeout;
+  final Engine engine = Engine();
+  bool _running = false;
 
   @override
   void initState() {
     super.initState();
-    _sub = FlutterOverlayWindow.overlayListener.listen(_onMsg);
     WidgetsBinding.instance.addPostFrameCallback((_) => _setSize(96, 96));
-  }
-
-  @override
-  void dispose() {
-    _sub?.cancel();
-    _timeout?.cancel();
-    super.dispose();
   }
 
   /// Window ka size set karo. Plugin dp lega ya px, ye device par check karke theek kar leta hai.
@@ -70,62 +68,117 @@ class _OverlayRootState extends State<OverlayRoot> {
     await _setSize(96, 96);
   }
 
-  void _armTimeout() {
-    _timeout?.cancel();
-    _timeout = Timer(const Duration(seconds: 25), () {
-      if (!mounted) return;
+  // ---------------- Poora kaam isi popup ke andar (main app ki zarurat nahi) ----------------
+
+  void _setStatus(String s) {
+    if (mounted) {
       setState(() {
-        phase = _Phase.error;
-        errorMsg = 'Main app se jawab nahi aaya. Chess Agent app ko recents mein khula rehne do '
-            '(swipe karke band mat karo) aur dobara try karo.';
+        phase = _Phase.loading;
+        status = s;
       });
-    });
+    }
   }
 
-  void _onMsg(dynamic raw) {
-    Map<String, dynamic> m;
-    try {
-      m = raw is String
-          ? Map<String, dynamic>.from(jsonDecode(raw) as Map)
-          : Map<String, dynamic>.from(raw as Map);
-    } catch (_) {
-      return;
+  void _fail(String msg) {
+    if (mounted) {
+      setState(() {
+        phase = _Phase.error;
+        errorMsg = msg;
+      });
     }
-    if (!mounted) return;
-    switch (m['t']) {
-      case 'status':
-        _armTimeout();
-        setState(() {
-          phase = _Phase.loading;
-          status = '${m['msg'] ?? ''}';
-        });
-        break;
-      case 'result':
-        _timeout?.cancel();
-        setState(() {
-          phase = _Phase.result;
-          result = m;
-        });
-        break;
-      case 'error':
-        _timeout?.cancel();
-        setState(() {
-          phase = _Phase.error;
-          errorMsg = '${m['msg'] ?? 'Koi masla aaya'}';
-        });
-        break;
+  }
+
+  /// Gallery ka sabse naya screenshot (bina UI ke).
+  Future<Uint8List> _latestScreenshot() async {
+    final paths = await pm.PhotoManager.getAssetPathList(
+      type: pm.RequestType.image,
+      onlyAll: true,
+      filterOption: pm.FilterOptionGroup()
+        ..addOrderOption(pm.OrderOption(type: pm.OrderOptionType.createDate, asc: false)),
+    );
+    if (paths.isEmpty) {
+      throw 'Gallery se koi photo nahi mili. Chess Agent app mein Photos ki "Allow all" permission do.';
     }
+    final list = await paths.first.getAssetListRange(start: 0, end: 1);
+    if (list.isEmpty) throw 'Gallery mein koi screenshot nahi mila.';
+    final a = list.first;
+    final age = DateTime.now().difference(a.createDateTime);
+    if (age.inMinutes >= 3) {
+      throw 'Sabse naya screenshot ${age.inMinutes} minute purana hai. '
+          'Pehle naya screenshot lo (Power+Vol), phir dobara dabao. '
+          'Agar abhi liya tha to Photos ki "Allow all" permission check karo.';
+    }
+    final bytes = await a.originBytes;
+    if (bytes == null) throw 'Screenshot khul nahi saka.';
+    return bytes;
+  }
+
+  bool? _detectWhiteBottom(List<String> s) {
+    final wk = s.indexOf('K'), bk = s.indexOf('k');
+    if (wk >= 0) return wk ~/ 8 >= 4;
+    if (bk >= 0) return bk ~/ 8 < 4;
+    return null;
   }
 
   Future<void> _start() async {
-    if (whiteTurn == null) return;
-    setState(() {
-      phase = _Phase.loading;
-      status = 'Shuru ho raha hai...';
-    });
-    _armTimeout();
-    await FlutterOverlayWindow.shareData(
-        jsonEncode({'t': 'analyze', 'white': whiteTurn, 'flip': flip}));
+    if (whiteTurn == null || _running) return;
+    _running = true;
+    final white = whiteTurn!;
+    var stage = 'shuru';
+    try {
+      _setStatus('Screenshot dhoondh raha hoon...');
+
+      stage = 'calibration load';
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
+      final ts = prefs.getString('tpl');
+      if (ts == null) {
+        _fail('Pehle Chess Agent app mein Calibrate karo (starting position ka screenshot).');
+        return;
+      }
+      final tpl = Templates.decode(ts);
+
+      stage = 'screenshot dhoondhna';
+      final shot = await _latestScreenshot();
+
+      stage = 'board padhna';
+      _setStatus('Board padh raha hoon...');
+      await Future.delayed(const Duration(milliseconds: 80));
+      final seen = await Isolate.run(() => tpl.scan(shot));
+      var wb = _detectWhiteBottom(seen) ?? true;
+      if (flip) wb = !wb;
+      final f = toFen(seen, wb, white);
+      final err = checkFen(f);
+      if (err != null) {
+        _fail('$err\n\nBoard ulta lage to "Board ulta" tick karke dobara try karo.');
+        return;
+      }
+
+      stage = 'engine';
+      _setStatus('Engine soch raha hai...');
+      final r = await engine.analyse(f).timeout(const Duration(seconds: 30));
+      if (r.isEmpty) {
+        _fail('Engine ne koi move nahi di. Dobara try karo.');
+        return;
+      }
+      final m = r.first.move;
+      if (!mounted) return;
+      setState(() {
+        phase = _Phase.result;
+        result = {
+          'white': white,
+          'san': san(f, m),
+          'from': m.substring(0, 2),
+          'to': m.substring(2, 4),
+          'eval': r.first.score,
+          'alts': r.skip(1).map((l) => '${san(f, l.move)}  (${l.score})').toList(),
+        };
+      });
+    } catch (e) {
+      _fail('[$stage] ${e is String ? e : e.toString()}');
+    } finally {
+      _running = false;
+    }
   }
 
   Future<void> _close() async {
