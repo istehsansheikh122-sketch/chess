@@ -41,15 +41,15 @@ class _OverlayRootState extends State<OverlayRoot> {
   }
 
   /// Window ka size set karo. Plugin dp lega ya px, ye device par check karke theek kar leta hai.
-  Future<void> _setSize(int w, int h) async {
+  Future<void> _setSize(int w, int h, {bool drag = true}) async {
     try {
       final view = PlatformDispatcher.instance.views.first;
       final dpr = view.devicePixelRatio;
-      await FlutterOverlayWindow.resizeOverlay(w, h);
+      await FlutterOverlayWindow.resizeOverlay(w, h, drag);
       await Future.delayed(const Duration(milliseconds: 350));
       final logicalW = view.physicalSize.width / dpr;
       if (logicalW < w * 0.75) {
-        await FlutterOverlayWindow.resizeOverlay((w * dpr).round(), (h * dpr).round());
+        await FlutterOverlayWindow.resizeOverlay((w * dpr).round(), (h * dpr).round(), drag);
       }
     } catch (_) {}
   }
@@ -61,7 +61,7 @@ class _OverlayRootState extends State<OverlayRoot> {
       sw = s.x.toDouble();
     } catch (_) {}
     final w = (sw - 16).clamp(260.0, 340.0).round();
-    await _setSize(w, 440);
+    await _setSize(w, 440, drag: false);
     if (mounted) setState(() => expanded = true);
   }
 
