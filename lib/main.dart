@@ -6,6 +6,7 @@ import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
+import 'package:media_projection_screenshot/media_projection_screenshot.dart';
 import 'package:photo_manager/photo_manager.dart' as pm;
 import 'engine.dart';
 import 'llm.dart';
@@ -360,6 +361,8 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
       return;
     }
     final limited = ps == pm.PermissionState.limited;
+    // Screen-capture ki ek-baar permission (system dialog mein "Start now" dabana hai)
+    MediaProjectionScreenshot().requestPermission();
 
     // Floating bubble start
     final dpr = MediaQuery.of(context).devicePixelRatio;
@@ -445,7 +448,7 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
             child: const Padding(
               padding: EdgeInsets.all(12),
               child: Text(
-                'Floating ♟ on hai. Lichess mein game khelo → Power+Volume se screenshot lo → ♟ bubble tap karo → baari chuno → "Best move batao" dabao. Move usi popup mein dikhegi.',
+                'Floating ♟ on hai. Lichess mein jab apni baari aaye → ♟ bubble tap karo. Screen khud capture hogi aur best move popup mein dikhegi.',
                 style: TextStyle(fontSize: 13),
               ),
             ),

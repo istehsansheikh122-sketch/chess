@@ -15,6 +15,7 @@ perms = [
     "android.permission.FOREGROUND_SERVICE",
     "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
     "android.permission.READ_MEDIA_IMAGES",
+    "android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION",
 ]
 add = "".join(
     f'    <uses-permission android:name="{p}"/>\n'

@@ -5,20 +5,44 @@ import 'dart:typed_data';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
+import 'package:image/image.dart' as img;
+import 'package:media_projection_screenshot/media_projection_screenshot.dart';
 import 'package:photo_manager/photo_manager.dart' as pm;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'engine.dart';
 import 'recognizer.dart';
 
-/// Floating popup (overlay). Collapsed = chhota ♟ bubble, tap par bada panel khulta hai:
-/// baari chuno -> "Best move batao" -> loading -> move isi panel mein.
+/// Floating popup (overlay). Bubble tap = poora kaam:
+/// panel chhupao -> screen capture -> board padho -> engine -> panel mein best move.
 /// NOTE: overlayMain() main.dart mein hai (plugin ki shart).
 enum _Phase { idle, loading, result, error }
 
-/// Board padhna alag thread par. Ye top-level function hai taake widget/State
-/// closure ke saath isolate ko na bheja jaye (warna "object is unsendable" error aata hai).
+/// Board padhna alag thread par. Top-level function hai taake widget/State
+/// closure ke saath isolate ko na bheja jaye.
 Future<List<String>> scanInBackground(String tplJson, Uint8List bytes) {
   return Isolate.run(() => Templates.decode(tplJson).scan(bytes));
+}
+
+/// MediaProjection se aayi raw RGBA pixels ko JPEG banao (alag thread par).
+Future<Uint8List> rawToJpg(Uint8List raw, int w, int h, int rowStride) {
+  return Isolate.run(() {
+    final im = img.Image.fromBytes(
+      width: w,
+      height: h,
+      bytes: raw.buffer,
+      rowStride: rowStride > 0 ? rowStride : w * 4,
+      numChannels: 4,
+      order: img.ChannelOrder.rgba,
+    );
+    return Uint8List.fromList(img.encodeJpg(im, quality: 92));
+  });
+}
+
+bool _looksLikeImageFile(Uint8List b) {
+  if (b.length < 4) return false;
+  final png = b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47;
+  final jpg = b[0] == 0xFF && b[1] == 0xD8;
+  return png || jpg;
 }
 
 class OverlayRoot extends StatefulWidget {
@@ -29,14 +53,15 @@ class OverlayRoot extends StatefulWidget {
 
 class _OverlayRootState extends State<OverlayRoot> {
   bool expanded = false;
-  bool? whiteTurn;
+  bool running = false;
   bool flip = false;
   _Phase phase = _Phase.idle;
   String status = '';
   String errorMsg = '';
+  String captureNote = '';
   Map<String, dynamic>? result;
   final Engine engine = Engine();
-  bool _running = false;
+  final MediaProjectionScreenshot _projection = MediaProjectionScreenshot();
 
   @override
   void initState() {
@@ -59,13 +84,14 @@ class _OverlayRootState extends State<OverlayRoot> {
   }
 
   Future<void> _expand() async {
+    if (expanded) return;
     double sw = 360;
     try {
       final s = await FlutterOverlayWindow.getScreenSize();
       sw = s.x.toDouble();
     } catch (_) {}
     final w = (sw - 16).clamp(260.0, 340.0).round();
-    await _setSize(w, 440, drag: false);
+    await _setSize(w, 460, drag: false);
     if (mounted) setState(() => expanded = true);
   }
 
@@ -73,8 +99,6 @@ class _OverlayRootState extends State<OverlayRoot> {
     if (mounted) setState(() => expanded = false);
     await _setSize(96, 96);
   }
-
-  // ---------------- Poora kaam isi popup ke andar (main app ki zarurat nahi) ----------------
 
   void _setStatus(String s) {
     if (mounted) {
@@ -94,6 +118,28 @@ class _OverlayRootState extends State<OverlayRoot> {
     }
   }
 
+  // ---------------- Screen lena ----------------
+
+  /// Pehle auto screen-capture (MediaProjection). Na chale to gallery ka naya screenshot.
+  Future<Uint8List> _grabScreen() async {
+    captureNote = '';
+    try {
+      final d = PlatformDispatcher.instance.views.first.display;
+      final w = d.size.width.round(), h = d.size.height.round();
+      final r = await _projection
+          .takeCapture(x: 0, y: 0, width: w, height: h)
+          .timeout(const Duration(seconds: 8));
+      if (r != null && r.bytes.isNotEmpty) {
+        if (_looksLikeImageFile(r.bytes)) return r.bytes;
+        return await rawToJpg(r.bytes, r.width, r.height, r.rowStride);
+      }
+      captureNote = 'Auto-capture se kuch nahi mila, gallery screenshot use hua.';
+    } catch (e) {
+      captureNote = 'Auto-capture nahi hua ($e). Gallery ka naya screenshot use hua.';
+    }
+    return _latestScreenshot();
+  }
+
   /// Gallery ka sabse naya screenshot (bina UI ke).
   Future<Uint8List> _latestScreenshot() async {
     final paths = await pm.PhotoManager.getAssetPathList(
@@ -110,9 +156,8 @@ class _OverlayRootState extends State<OverlayRoot> {
     final a = list.first;
     final age = DateTime.now().difference(a.createDateTime);
     if (age.inMinutes >= 3) {
-      throw 'Sabse naya screenshot ${age.inMinutes} minute purana hai. '
-          'Pehle naya screenshot lo (Power+Vol), phir dobara dabao. '
-          'Agar abhi liya tha to Photos ki "Allow all" permission check karo.';
+      throw 'Auto-capture nahi chala aur gallery ka sabse naya screenshot ${age.inMinutes} minute purana hai. '
+          'App mein "Floating Button On" karte waqt screen-capture ka "Start now" allow karo.';
     }
     final bytes = await a.originBytes;
     if (bytes == null) throw 'Screenshot khul nahi saka.';
@@ -126,36 +171,43 @@ class _OverlayRootState extends State<OverlayRoot> {
     return null;
   }
 
-  Future<void> _start() async {
-    if (whiteTurn == null || _running) return;
-    _running = true;
-    final white = whiteTurn!;
+  // ---------------- Poora kaam ----------------
+
+  /// opponent=false: meri (neeche wali side ki) baari. true: opponent ki baari.
+  Future<void> _run({bool opponent = false}) async {
+    if (running) return;
+    if (mounted) setState(() => running = true);
     var stage = 'shuru';
     try {
-      _setStatus('Screenshot dhoondh raha hoon...');
-
       stage = 'calibration load';
       final prefs = await SharedPreferences.getInstance();
       await prefs.reload();
       final ts = prefs.getString('tpl');
       if (ts == null) {
+        await _expand();
         _fail('Pehle Chess Agent app mein Calibrate karo (starting position ka screenshot).');
         return;
       }
 
-      stage = 'screenshot dhoondhna';
-      final shot = await _latestScreenshot();
+      // Panel board ko dhak leta hai, isliye capture se pehle chhupao.
+      if (expanded) await _collapse();
+      await Future.delayed(const Duration(milliseconds: 250));
 
+      stage = 'screen capture';
+      final shot = await _grabScreen();
+
+      await _expand();
       stage = 'board padhna';
       _setStatus('Board padh raha hoon...');
       await Future.delayed(const Duration(milliseconds: 80));
       final seen = await scanInBackground(ts, shot);
       var wb = _detectWhiteBottom(seen) ?? true;
       if (flip) wb = !wb;
+      final white = opponent ? !wb : wb; // neeche wali side meri hai
       final f = toFen(seen, wb, white);
       final err = checkFen(f);
       if (err != null) {
-        _fail('$err\n\nBoard ulta lage to "Board ulta" tick karke dobara try karo.');
+        _fail('$err\n\nBoard ulta lage to neeche "Board ulta" tick karke dobara try karo.');
         return;
       }
 
@@ -172,6 +224,7 @@ class _OverlayRootState extends State<OverlayRoot> {
         phase = _Phase.result;
         result = {
           'white': white,
+          'info': '${wb ? 'White' : 'Black'} neeche${opponent ? ' • opponent ki baari' : ''}',
           'san': san(f, m),
           'from': m.substring(0, 2),
           'to': m.substring(2, 4),
@@ -180,9 +233,12 @@ class _OverlayRootState extends State<OverlayRoot> {
         };
       });
     } catch (e) {
+      try {
+        await _expand();
+      } catch (_) {}
       _fail('[$stage] ${e is String ? e : e.toString()}');
     } finally {
-      _running = false;
+      if (mounted) setState(() => running = false);
     }
   }
 
@@ -192,6 +248,8 @@ class _OverlayRootState extends State<OverlayRoot> {
     } catch (_) {}
     await FlutterOverlayWindow.closeOverlay();
   }
+
+  // ---------------- UI ----------------
 
   @override
   Widget build(BuildContext context) {
@@ -204,13 +262,13 @@ class _OverlayRootState extends State<OverlayRoot> {
   Widget _bubble() {
     return Center(
       child: GestureDetector(
-        onTap: _expand,
+        onTap: running ? null : () => _run(),
         child: Container(
           width: 64,
           height: 64,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: Colors.green.shade700,
+            color: running ? Colors.orange.shade700 : Colors.green.shade700,
             boxShadow: [
               BoxShadow(
                 color: Colors.black.withOpacity(0.4),
@@ -220,8 +278,13 @@ class _OverlayRootState extends State<OverlayRoot> {
             ],
             border: Border.all(color: Colors.white70, width: 2),
           ),
-          child: const Center(
-            child: Text('♟', style: TextStyle(fontSize: 32, color: Colors.white)),
+          child: Center(
+            child: running
+                ? const SizedBox(
+                    width: 30,
+                    height: 30,
+                    child: CircularProgressIndicator(strokeWidth: 3, color: Colors.white))
+                : const Text('♟', style: TextStyle(fontSize: 32, color: Colors.white)),
           ),
         ),
       ),
@@ -248,7 +311,7 @@ class _OverlayRootState extends State<OverlayRoot> {
               const Spacer(),
               IconButton(
                   visualDensity: VisualDensity.compact,
-                  onPressed: _collapse,
+                  onPressed: running ? null : _collapse,
                   icon: const Icon(Icons.remove, color: Colors.white)),
               IconButton(
                   visualDensity: VisualDensity.compact,
@@ -286,73 +349,47 @@ class _OverlayRootState extends State<OverlayRoot> {
         return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text(errorMsg, style: const TextStyle(color: Colors.orangeAccent, fontSize: 14)),
           const SizedBox(height: 14),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton(
-                onPressed: () => setState(() => phase = _Phase.idle),
-                child: const Text('Dobara try karo')),
-          ),
+          _actions(),
         ]);
       case _Phase.idle:
-        return _setupView();
+        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('Lichess par apni baari aaye to bas ♟ bubble tap karo.',
+              style: TextStyle(color: Colors.white70)),
+          const SizedBox(height: 14),
+          _actions(),
+        ]);
     }
   }
 
-  Widget _setupView() {
+  Widget _actions() {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      const Text(
-          '1) Lichess ka screenshot lo (Power+Vol)\n2) Baari chuno\n3) Neeche button dabao',
-          style: TextStyle(fontSize: 13, color: Colors.white70)),
-      const SizedBox(height: 12),
-      const Text('Kiski baari hai?', style: TextStyle(fontWeight: FontWeight.bold)),
-      const SizedBox(height: 6),
       Row(children: [
-        Expanded(child: _turnBtn(true)),
+        Expanded(
+          child: FilledButton.icon(
+            onPressed: running ? null : () => _run(),
+            icon: const Icon(Icons.bolt),
+            label: const Text('Best move'),
+          ),
+        ),
         const SizedBox(width: 8),
-        Expanded(child: _turnBtn(false)),
+        Expanded(
+          child: OutlinedButton(
+            style: OutlinedButton.styleFrom(foregroundColor: Colors.white),
+            onPressed: running ? null : () => _run(opponent: true),
+            child: const Text('Opponent ki baari', textAlign: TextAlign.center),
+          ),
+        ),
       ]),
-      const SizedBox(height: 4),
       InkWell(
         onTap: () => setState(() => flip = !flip),
         child: Row(children: [
           Checkbox(value: flip, onChanged: (v) => setState(() => flip = v ?? false)),
           const Expanded(
-              child: Text('Board ulta padha jaye to tick karo',
+              child: Text('Board ulta (galat padha jaye to tick karo)',
                   style: TextStyle(fontSize: 12, color: Colors.white70))),
         ]),
       ),
-      const SizedBox(height: 6),
-      SizedBox(
-        width: double.infinity,
-        height: 48,
-        child: FilledButton.icon(
-          onPressed: whiteTurn == null ? null : _start,
-          icon: const Icon(Icons.bolt),
-          label: const Text('Best move batao', style: TextStyle(fontSize: 16)),
-        ),
-      ),
     ]);
-  }
-
-  Widget _turnBtn(bool white) {
-    final selected = whiteTurn == white;
-    final label = Text(white ? 'White' : 'Black');
-    if (selected) {
-      return FilledButton(
-        style: FilledButton.styleFrom(
-          backgroundColor: white ? Colors.white : Colors.black,
-          foregroundColor: white ? Colors.black : Colors.white,
-          side: const BorderSide(color: Colors.greenAccent, width: 2),
-        ),
-        onPressed: () => setState(() => whiteTurn = white),
-        child: label,
-      );
-    }
-    return OutlinedButton(
-      style: OutlinedButton.styleFrom(foregroundColor: Colors.white),
-      onPressed: () => setState(() => whiteTurn = white),
-      child: label,
-    );
   }
 
   Widget _resultView() {
@@ -371,6 +408,7 @@ class _OverlayRootState extends State<OverlayRoot> {
               style: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold)),
           Text('${r['from']} → ${r['to']}   •   eval ${r['eval']}',
               style: const TextStyle(fontSize: 13)),
+          Text('${r['info']}', style: const TextStyle(fontSize: 11, color: Colors.white70)),
         ]),
       ),
       if (alts.isNotEmpty) ...[
@@ -378,16 +416,12 @@ class _OverlayRootState extends State<OverlayRoot> {
         const Text('Doosri options:', style: TextStyle(fontSize: 12, color: Colors.white70)),
         for (final a in alts) Text('• $a', style: const TextStyle(fontSize: 14)),
       ],
-      const SizedBox(height: 12),
-      SizedBox(
-        width: double.infinity,
-        child: OutlinedButton.icon(
-          style: OutlinedButton.styleFrom(foregroundColor: Colors.white),
-          onPressed: () => setState(() => phase = _Phase.idle),
-          icon: const Icon(Icons.refresh),
-          label: const Text('Naya screenshot / agli baari'),
-        ),
-      ),
+      if (captureNote.isNotEmpty) ...[
+        const SizedBox(height: 8),
+        Text(captureNote, style: const TextStyle(fontSize: 11, color: Colors.orangeAccent)),
+      ],
+      const SizedBox(height: 10),
+      _actions(),
     ]);
   }
 }

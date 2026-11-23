@@ -78,14 +78,11 @@ Local build ke liye `flutter create ...` ke baad `python3 tools/patch_android.py
 - Xiaomi/Oppo/Vivo/Realme: **Display pop-up windows while running in background** bhi ON karo, aur battery saver/autostart allow karo.
 - `overlayMain()` main.dart mein hai (plugin ki shart) — isko wahan se mat hatana.
 
-## Use kaise karein (floating popup)
+## Use kaise karein
 
-1. App mein ek baar **Calibrate** karo, phir **Floating Button On Karo** (Overlay + Photos "Allow all" permission do).
-2. Lichess mein game chalao, Power+Volume se **screenshot lo**.
-3. ♟ bubble tap karo → popup khulta hai.
-4. **White / Black** chuno (jis ki baari ho) → **Best move batao** dabao.
-5. Popup mein loading status dikhega (screenshot → board → engine), phir best move + 2 doosri options.
-6. Agli baari ke liye naya screenshot lo aur "Naya screenshot / agli baari" dabao.
+1. App mein ek baar **Calibrate** karo.
+2. **Floating Button On Karo** dabao: Overlay permission, Photos "Allow all", aur screen-capture ka **"Start now"** allow karo.
+3. Lichess mein jab apni baari aaye → ♟ bubble tap karo. Bubble spinner dikhata hai, screen khud capture hoti hai, phir popup mein best move aati hai.
+4. Popup ke buttons: **Best move** (dobara), **Opponent ki baari**, aur **Board ulta** tick.
 
-Tips: bubble ko board ke upar mat rakhna (screenshot mein board dhak jayega) — usay upar status bar wali jagah rehne do.
-Chess Agent app ko recents se swipe karke band mat karna, warna popup ko jawab nahi milega.
+Agar auto-capture na chale to popup gallery ke naye screenshot par fallback karta hai aur wajah popup mein likhta hai.
