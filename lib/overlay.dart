@@ -15,6 +15,12 @@ import 'recognizer.dart';
 /// NOTE: overlayMain() main.dart mein hai (plugin ki shart).
 enum _Phase { idle, loading, result, error }
 
+/// Board padhna alag thread par. Ye top-level function hai taake widget/State
+/// closure ke saath isolate ko na bheja jaye (warna "object is unsendable" error aata hai).
+Future<List<String>> scanInBackground(String tplJson, Uint8List bytes) {
+  return Isolate.run(() => Templates.decode(tplJson).scan(bytes));
+}
+
 class OverlayRoot extends StatefulWidget {
   const OverlayRoot({super.key});
   @override
@@ -136,7 +142,6 @@ class _OverlayRootState extends State<OverlayRoot> {
         _fail('Pehle Chess Agent app mein Calibrate karo (starting position ka screenshot).');
         return;
       }
-      final tpl = Templates.decode(ts);
 
       stage = 'screenshot dhoondhna';
       final shot = await _latestScreenshot();
@@ -144,7 +149,7 @@ class _OverlayRootState extends State<OverlayRoot> {
       stage = 'board padhna';
       _setStatus('Board padh raha hoon...');
       await Future.delayed(const Duration(milliseconds: 80));
-      final seen = await Isolate.run(() => tpl.scan(shot));
+      final seen = await scanInBackground(ts, shot);
       var wb = _detectWhiteBottom(seen) ?? true;
       if (flip) wb = !wb;
       final f = toFen(seen, wb, white);
