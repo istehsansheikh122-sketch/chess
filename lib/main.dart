@@ -6,8 +6,8 @@ import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
-import 'package:media_projection_screenshot/media_projection_screenshot.dart';
 import 'package:photo_manager/photo_manager.dart' as pm;
+import 'package:screen_grab/screen_grab.dart';
 import 'engine.dart';
 import 'llm.dart';
 import 'recognizer.dart';
@@ -133,6 +133,9 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
     if (m['t'] == 'analyze') {
       await _runFromOverlay(m['white'] == true, m['flip'] == true);
     } else if (m['t'] == 'closed') {
+      try {
+        await ScreenGrab.stop();
+      } catch (_) {}
       if (mounted) setState(() => floatingOn = false);
     }
   }
@@ -340,6 +343,9 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
   Future<void> toggleFloating() async {
     if (await FlutterOverlayWindow.isActive()) {
       await FlutterOverlayWindow.closeOverlay();
+      try {
+        await ScreenGrab.stop();
+      } catch (_) {}
       setState(() => floatingOn = false);
       return;
     }
@@ -361,8 +367,6 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
       return;
     }
     final limited = ps == pm.PermissionState.limited;
-    // Screen-capture ki ek-baar permission (system dialog mein "Start now" dabana hai)
-    MediaProjectionScreenshot().requestPermission();
 
     // Floating bubble start
     final dpr = MediaQuery.of(context).devicePixelRatio;
@@ -377,11 +381,18 @@ class _HomeState extends State<Home> with WidgetsBindingObserver {
       flag: OverlayFlag.defaultFlag,
       positionGravity: PositionGravity.auto,
     );
+    // Screen-capture ki ek-baar permission (system dialog: "Start now" / "Entire screen")
+    var grabOk = false;
+    try {
+      grabOk = await ScreenGrab.requestPermission();
+    } catch (_) {}
     setState(() {
       floatingOn = true;
-      note = limited
+      note = !grabOk
+          ? 'Floating on, lekin screen-capture permission nahi mili. Bubble gallery ke naye screenshot par chalega. Dobara On/Off karke "Start now" allow karo.'
+          : limited
           ? 'Floating on, lekin Photos ki "Allow all" access do, warna naye screenshots nahi dikhenge.'
-          : 'Floating on. Lichess kholo, screenshot lo (Power+Vol), phir ♟ bubble tap karo.';
+          : 'Floating on. Lichess kholo aur apni baari par ♟ bubble tap karo.';
     });
   }
 

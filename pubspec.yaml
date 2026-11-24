@@ -1,7 +1,7 @@
 name: chess_agent
 description: Screenshot se chess best move batane wali app. Floating button ke sath.
 publish_to: none
-version: 1.5.0+9
+version: 1.5.1+10
 environment:
   sdk: ">=3.3.0 <4.0.0"
 dependencies:
@@ -15,6 +15,7 @@ dependencies:
   shared_preferences: ^2.3.2
   flutter_overlay_window: ^1.0.2
   photo_manager: ^3.6.0
-  media_projection_screenshot: ^0.0.6
+  screen_grab:
+    path: plugins/screen_grab
 flutter:
   uses-material-design: true

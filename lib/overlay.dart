@@ -5,9 +5,8 @@ import 'dart:typed_data';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
-import 'package:image/image.dart' as img;
-import 'package:media_projection_screenshot/media_projection_screenshot.dart';
 import 'package:photo_manager/photo_manager.dart' as pm;
+import 'package:screen_grab/screen_grab.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'engine.dart';
 import 'recognizer.dart';
@@ -21,28 +20,6 @@ enum _Phase { idle, loading, result, error }
 /// closure ke saath isolate ko na bheja jaye.
 Future<List<String>> scanInBackground(String tplJson, Uint8List bytes) {
   return Isolate.run(() => Templates.decode(tplJson).scan(bytes));
-}
-
-/// MediaProjection se aayi raw RGBA pixels ko JPEG banao (alag thread par).
-Future<Uint8List> rawToJpg(Uint8List raw, int w, int h, int rowStride) {
-  return Isolate.run(() {
-    final im = img.Image.fromBytes(
-      width: w,
-      height: h,
-      bytes: raw.buffer,
-      rowStride: rowStride > 0 ? rowStride : w * 4,
-      numChannels: 4,
-      order: img.ChannelOrder.rgba,
-    );
-    return Uint8List.fromList(img.encodeJpg(im, quality: 92));
-  });
-}
-
-bool _looksLikeImageFile(Uint8List b) {
-  if (b.length < 4) return false;
-  final png = b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47;
-  final jpg = b[0] == 0xFF && b[1] == 0xD8;
-  return png || jpg;
 }
 
 class OverlayRoot extends StatefulWidget {
@@ -61,7 +38,6 @@ class _OverlayRootState extends State<OverlayRoot> {
   String captureNote = '';
   Map<String, dynamic>? result;
   final Engine engine = Engine();
-  final MediaProjectionScreenshot _projection = MediaProjectionScreenshot();
 
   @override
   void initState() {
@@ -124,16 +100,13 @@ class _OverlayRootState extends State<OverlayRoot> {
   Future<Uint8List> _grabScreen() async {
     captureNote = '';
     try {
-      final d = PlatformDispatcher.instance.views.first.display;
-      final w = d.size.width.round(), h = d.size.height.round();
-      final r = await _projection
-          .takeCapture(x: 0, y: 0, width: w, height: h)
-          .timeout(const Duration(seconds: 8));
-      if (r != null && r.bytes.isNotEmpty) {
-        if (_looksLikeImageFile(r.bytes)) return r.bytes;
-        return await rawToJpg(r.bytes, r.width, r.height, r.rowStride);
+      if (!await ScreenGrab.isReady()) {
+        await ScreenGrab.requestPermission(); // system dialog: "Start now"
       }
-      captureNote = 'Auto-capture se kuch nahi mila, gallery screenshot use hua.';
+      final b = await ScreenGrab.capture();
+      if (b != null && b.isNotEmpty) return b;
+      captureNote =
+          'Auto-capture se frame nahi mila (${await ScreenGrab.lastError()}). Gallery screenshot use hua.';
     } catch (e) {
       captureNote = 'Auto-capture nahi hua ($e). Gallery ka naya screenshot use hua.';
     }

@@ -1,0 +1,16 @@
+name: screen_grab
+description: Local plugin - MediaProjection se screen frame (JPEG) lena, ek baar permission ke baad.
+version: 0.0.1
+publish_to: none
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+  flutter: ">=3.10.0"
+dependencies:
+  flutter:
+    sdk: flutter
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.istehsaan.screengrab
+        pluginClass: ScreenGrabPlugin

@@ -81,8 +81,10 @@ Local build ke liye `flutter create ...` ke baad `python3 tools/patch_android.py
 ## Use kaise karein
 
 1. App mein ek baar **Calibrate** karo.
-2. **Floating Button On Karo** dabao: Overlay permission, Photos "Allow all", aur screen-capture ka **"Start now"** allow karo.
+2. **Floating Button On Karo** dabao. Permissions: Overlay, Photos "Allow all", aur screen-capture ka system dialog (**Start now**, agar poochhe to **Entire screen**).
 3. Lichess mein jab apni baari aaye → ♟ bubble tap karo. Bubble spinner dikhata hai, screen khud capture hoti hai, phir popup mein best move aati hai.
 4. Popup ke buttons: **Best move** (dobara), **Opponent ki baari**, aur **Board ulta** tick.
 
-Agar auto-capture na chale to popup gallery ke naye screenshot par fallback karta hai aur wajah popup mein likhta hai.
+Screen capture `plugins/screen_grab` (apna chhota Android plugin, Java) se hota hai: ek baar permission ke baad
+foreground service sabse naya frame pakde rakhti hai. Na chale to popup gallery ke naye screenshot par fallback karta hai
+aur wajah popup mein likhta hai.
